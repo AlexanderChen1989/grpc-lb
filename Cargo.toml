@@ -1,0 +1,28 @@
+[package]
+edition = "2021"
+name = "nice"
+version = "0.1.0"
+
+[lib]
+crate-type = ["rlib", "dylib"]
+
+[dependencies]
+libc = "0.2"
+
+async-trait = "*"
+prost = "*"
+tokio = {version = "*", features = ["full"]}
+tonic = "*"
+
+trust-dns-resolver = "*"
+crossfire = "*"
+
+gethostname = "*"
+
+[dependencies.tower]
+version = "0.4"
+features = ["discover"]
+
+[build-dependencies]
+cbindgen = "0.23.0"
+tonic-build = "*"
