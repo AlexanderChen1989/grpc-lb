@@ -4,7 +4,6 @@ use std::{
 };
 
 
-
 use libc::{c_char, c_int, size_t};
 
 pub mod pb;
@@ -47,7 +46,7 @@ pub unsafe extern "C" fn name() -> *const c_char {
 
 #[no_mangle]
 pub unsafe extern "C" fn okok() -> Nums {
-    let mut v = vec![1, 2, 3, 4, 5, 6];
+    let v = vec![1, 2, 3, 4, 5, 6];
 
     let nums = Nums {
         num: v.as_ptr(),
