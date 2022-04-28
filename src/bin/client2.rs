@@ -33,8 +33,8 @@ async fn main() {
                     .await;
 
                 match res {
-                    Ok(_) => {
-                        println!(">>>> ok");
+                    Ok(res) => {
+                        println!(">>>> {:?}", res.into_inner().body);
                     }
                     Err(e) => {
                         println!(">>>> error {e:?}");
