@@ -1,6 +1,5 @@
-use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::{collections::HashMap, thread};
 
 use nice::pb::{hello_service_client::HelloServiceClient, HelloReq};
 use tokio::sync::RwLock;
