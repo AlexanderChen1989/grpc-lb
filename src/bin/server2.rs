@@ -1,3 +1,4 @@
+use rand::Rng;
 use std::{
     future::Future,
     net::SocketAddr,
@@ -5,6 +6,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    thread,
 };
 
 use nice::pb::{
@@ -13,19 +15,31 @@ use nice::pb::{
 };
 use tokio::runtime::{Builder, Runtime};
 use tokio::time;
+use tokio::sync::mpsc;
 use tonic::transport::Server;
 
 fn main() {
+    let (rng_tx, rng_rx) = flume::bounded(0);
+
+    thread::spawn(move || {
+        let mut rng = rand::thread_rng();
+        loop {
+            let d: u64 = rng.gen_range(500..2000);
+
+            rng_tx.send(d).unwrap();
+        }
+    });
+
     let rt = Builder::new_multi_thread().enable_all().build().unwrap();
     let rt = Arc::new(rt);
 
-    rt.clone().block_on(async {
+    rt.clone().block_on(async move {
         let addr: SocketAddr = "0.0.0.0:7788".parse().unwrap();
 
-        let (req_tx, req_rx) = flume::bounded(10);
+        let (req_tx, req_rx) = flume::bounded(1024);
 
         for _ in 0..10 {
-            let w = Worker::new(&rt, &req_rx);
+            let w = Worker::new(&rt, &req_rx, &rng_rx);
             w.start();
         }
 
@@ -76,6 +90,7 @@ impl HelloService for HelloServiceImpl {
 struct Worker {
     idx: usize,
     req_rx: flume::Receiver<Request>,
+    rng_rx: flume::Receiver<u64>,
     rt: Arc<Runtime>,
 }
 
@@ -85,11 +100,18 @@ impl Worker {
     fn new(
         rt: &Arc<Runtime>,
         req_rx: &flume::Receiver<Request>,
+        rng_rx: &flume::Receiver<u64>,
     ) -> Self {
         let idx = IDX.fetch_add(1, Ordering::Relaxed);
         let req_rx = req_rx.clone();
+        let rng_rx = rng_rx.clone();
         let rt = rt.clone();
-        Self { idx, req_rx, rt }
+        Self {
+            idx,
+            req_rx,
+            rng_rx,
+            rt,
+        }
     }
 
     fn start(&self) {
@@ -101,6 +123,8 @@ impl Worker {
                     body: format!("worker-{idx}"),
                 };
                 res_tx.send_async(res).await.unwrap();
+                let d = time::Duration::from_millis(idx as u64 * 2);
+                time::sleep(d).await;
             }
         });
     }
