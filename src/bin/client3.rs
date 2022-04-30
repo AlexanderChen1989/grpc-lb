@@ -26,12 +26,17 @@ fn main() {
     let (ch, sender) = MyChannel::<String>::new(rt.clone());
     rt.spawn(async move {
         for addr in ["http://localhost:7788", "http://localhost:7789"] {
-            time::sleep(time::Duration::from_secs(3)).await;
+            sleep(3000).await;
             sender
-                .send_async(Change::Insert("1".into(), Endpoint::from_static(addr)))
+                .send_async(Change::Insert(addr.into(), Endpoint::from_static(addr)))
                 .await
                 .unwrap();
         }
+        sleep(3000).await;
+        sender
+            .send_async(Change::Remove("http://localhost:7788".into()))
+            .await
+            .unwrap();
     });
 
     rt.block_on(async {
@@ -48,8 +53,13 @@ fn main() {
                     println!("{e:?}")
                 }
             }
+            sleep(100).await;
         }
     });
+}
+
+async fn sleep(d: u64) {
+    time::sleep(time::Duration::from_millis(d)).await;
 }
 
 enum Change<K: PartialEq> {
