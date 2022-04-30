@@ -63,7 +63,7 @@ fn main() {
 
         static ID: AtomicU64 = AtomicU64::new(0);
 
-        for i in 0..20 {
+        for _ in 0..20 {
             let ch = ch.clone();
             rt.spawn(async move {
                 loop {
