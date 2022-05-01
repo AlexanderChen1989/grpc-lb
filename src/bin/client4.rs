@@ -1,12 +1,12 @@
 use log::*;
 use nice::pb::hello_service_client::HelloServiceClient;
 use nice::pb::HelloReq;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
+use std::task::{Context, Poll};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::RwLock;
 use tokio::time;
@@ -15,7 +15,7 @@ use tonic::{body::BoxBody, codegen::http, transport::Endpoint};
 use tower::Service;
 
 fn main() {
-    let s = String::from("Hello, world");
+    let _s = String::from("Hello, world");
     let rt = Arc::new(
         Builder::new_multi_thread()
             .worker_threads(2)

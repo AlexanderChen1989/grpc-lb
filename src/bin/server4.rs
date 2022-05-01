@@ -1,6 +1,5 @@
 use rand::Rng;
 use std::{
-    future::Future,
     net::SocketAddr,
     sync::{
         atomic::{AtomicUsize, Ordering},

@@ -1,6 +1,6 @@
 use nice::pb::hello_service_client::HelloServiceClient;
 use nice::pb::HelloReq;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll, Waker};
 use std::thread;
