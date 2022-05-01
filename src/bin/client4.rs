@@ -1,17 +1,17 @@
+use log::*;
 use nice::pb::hello_service_client::HelloServiceClient;
 use nice::pb::HelloReq;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
-use std::thread;
 use tokio::runtime::{Builder, Runtime};
+use tokio::sync::RwLock;
 use tokio::time;
 use tonic::transport::Channel;
-use tonic::{
-    body::BoxBody,
-    codegen::http,
-    transport::{self, Endpoint},
-};
+use tonic::{body::BoxBody, codegen::http, transport::Endpoint};
 use tower::Service;
 
 fn main() {
@@ -23,7 +23,7 @@ fn main() {
             .unwrap(),
     );
 
-    let (ch, sender) = MyChannel::<String>::new(rt.clone());
+    let (ch, sender) = HelloChannel::new(rt.clone());
     rt.spawn(async move {
         for addr in ["http://localhost:7788", "http://localhost:7789"] {
             sleep(3000).await;
@@ -58,107 +58,151 @@ fn main() {
     });
 }
 
-async fn sleep(d: u64) {
-    time::sleep(time::Duration::from_millis(d)).await;
+type HelloChannelResponse = <Channel as Service<http::Request<BoxBody>>>::Response;
+type HelloChannelError = <Channel as Service<http::Request<BoxBody>>>::Error;
+
+struct Request {
+    req: http::Request<BoxBody>,
+    res_tx: flume::Sender<Result<HelloChannelResponse, HelloChannelError>>,
 }
 
-enum Change<K: PartialEq> {
-    Insert(K, Endpoint),
-    Remove(K),
-}
-
-struct MyChannel<K: PartialEq> {
+#[derive(Clone)]
+struct HelloChannel {
     rt: Arc<Runtime>,
-    channels: Arc<RwLock<Vec<(K, Channel)>>>,
-    counter: AtomicUsize,
-
-    ch_tx: flume::Sender<Channel>,
-    ch_rx: flume::Receiver<Channel>,
-
-    change_rx: flume::Receiver<Change<K>>,
+    change_rx: flume::Receiver<Change<String>>,
+    workers: Arc<RwLock<HashMap<String, flume::Sender<()>>>>,
+    workers_num: Arc<AtomicUsize>,
+    request_tx: flume::Sender<Request>,
+    request_rx: flume::Receiver<Request>,
     waker_tx: flume::Sender<Waker>,
     waker_rx: flume::Receiver<Waker>,
 }
 
-struct Pair<K: PartialEq>(K, Endpoint);
-
-impl<K: PartialEq> PartialEq for Pair<K> {
-    fn eq(
-        &self,
-        other: &Self,
-    ) -> bool {
-        self.0 == other.0
-    }
-}
-
-fn connect(
-    rt: Arc<Runtime>,
-    endpoint: Endpoint,
-) -> Result<Channel, transport::Error> {
-    let (tx, rx) = flume::bounded(1);
-
-    rt.spawn(async move {
-        let res = endpoint.connect().await;
-        tx.send_async(res).await.unwrap();
-    });
-
-    rx.recv().unwrap()
-}
-
-impl<K: PartialEq + Send + Sync + 'static> MyChannel<K> {
-    fn new(rt: Arc<Runtime>) -> (Self, flume::Sender<Change<K>>) {
+impl HelloChannel {
+    fn new(rt: Arc<Runtime>) -> (Self, flume::Sender<Change<String>>) {
         let (change_tx, change_rx) = flume::bounded(10);
-        let (ch_tx, ch_rx) = flume::bounded(10);
+        let workers = Arc::new(RwLock::new(HashMap::new()));
+        let workers_num = Arc::new(AtomicUsize::new(0));
+        let (request_tx, request_rx) = flume::bounded(10);
         let (waker_tx, waker_rx) = flume::bounded(10);
 
-        let channels: Arc<RwLock<Vec<(K, Channel)>>> = Arc::new(RwLock::new(vec![]));
-        let counter = AtomicUsize::new(0);
-
-        let ch = MyChannel {
+        let hc = Self {
             rt,
             change_rx,
-            ch_tx,
-            ch_rx,
-            counter,
-            channels,
-            waker_rx,
+            workers,
+            workers_num,
+            request_tx,
+            request_rx,
             waker_tx,
+            waker_rx,
         };
-        ch.start();
-
-        (ch, change_tx)
+        hc.start();
+        (hc, change_tx)
     }
 
     fn start(&self) {
-        let rt = self.rt.clone();
-        let change_rx = self.change_rx.clone();
-        let chs = self.channels.clone();
-        let waker_rx = self.waker_rx.clone();
+        self.clone().start_change_loop();
+    }
 
-        thread::spawn(move || {
-            while let Ok(change) = change_rx.recv() {
-                match change {
-                    Change::Insert(k, endpoint) => {
-                        let res = connect(rt.clone(), endpoint);
-                        match res {
-                            Ok(ch) => {
-                                let mut chs = chs.write().unwrap();
-                                chs.push((k, ch));
-                                while let Ok(waker) =
-                                    waker_rx.recv_timeout(time::Duration::from_millis(1))
-                                {
-                                    waker.wake();
-                                }
-                            }
-                            Err(e) => {
-                                println!("{e:?}");
+    fn handle_request(
+        rt: Arc<Runtime>,
+        mut chan: Channel,
+        req: Request,
+    ) {
+        let Request { req, res_tx } = req;
+
+        rt.spawn(async move {
+            let res = chan.call(req).await;
+            res_tx.send_async(res).await.unwrap();
+        });
+    }
+
+    fn remove_workers(
+        self,
+        key: String,
+    ) {
+        let HelloChannel { rt, workers, .. } = self;
+        rt.spawn(async move {
+            let mut workers = workers.write().await;
+            workers.remove_entry(&key);
+        });
+    }
+
+    fn start_workers(
+        self,
+        key: String,
+        chan: Channel,
+    ) {
+        let HelloChannel {
+            rt,
+            workers,
+            request_rx,
+            workers_num,
+            waker_rx,
+            ..
+        } = self;
+        let (stop_tx, stop_rx) = flume::bounded::<()>(1);
+
+        for _ in 0..10 {
+            let rt = rt.clone();
+            let stop_rx = stop_rx.clone();
+            let chan = chan.clone();
+            let request_rx = request_rx.clone();
+            let workers_num = workers_num.clone();
+            rt.clone().spawn(async move {
+                workers_num.fetch_add(1, Ordering::Relaxed);
+                loop {
+                    tokio::select! {
+                        _ = stop_rx.recv_async() => {  break; }
+                        req = request_rx.recv_async() => {
+                            match req {
+                                Ok(req) => {
+                                    HelloChannel::handle_request(rt.clone(), chan.clone(), req)
+                                },
+                                Err(e) => error!("{:?}", e),
                             }
                         }
                     }
+                }
+                workers_num.fetch_sub(1, Ordering::Relaxed);
+            });
+        }
+
+        rt.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = sleep(10) => {break;}
+                    res = waker_rx.recv_async() => {
+                        match res {
+                            Ok(waker) => waker.wake(),
+                            Err(e) => error!("{:?}", e),
+                        }
+                    }
+                }
+            }
+        });
+
+        rt.spawn(async move {
+            let mut workers = workers.write().await;
+            workers.insert(key, stop_tx);
+        });
+    }
+
+    fn start_change_loop(&self) {
+        let HelloChannel { rt, change_rx, .. } = self.clone();
+        let hello_channel = self.clone();
+
+        rt.clone().spawn(async move {
+            while let Ok(change) = change_rx.recv_async().await {
+                match change {
+                    Change::Insert(key, endpoint) => match endpoint.connect().await {
+                        Ok(chan) => {
+                            HelloChannel::start_workers(hello_channel.clone(), key, chan);
+                        }
+                        Err(_) => todo!(),
+                    },
                     Change::Remove(key) => {
-                        let mut chs = chs.write().unwrap();
-                        let old_chs = std::mem::take(&mut *chs);
-                        *chs = old_chs.into_iter().filter(|(k, _)| *k != key).collect();
+                        HelloChannel::remove_workers(hello_channel.clone(), key);
                     }
                 }
             }
@@ -166,41 +210,45 @@ impl<K: PartialEq + Send + Sync + 'static> MyChannel<K> {
     }
 }
 
-impl<K: PartialEq> Service<http::Request<BoxBody>> for MyChannel<K> {
-    type Response = <Channel as Service<http::Request<BoxBody>>>::Response;
-    type Error = <Channel as Service<http::Request<BoxBody>>>::Error;
-    type Future = <Channel as Service<http::Request<BoxBody>>>::Future;
+impl Service<http::Request<BoxBody>> for HelloChannel {
+    type Response = HelloChannelResponse;
+    type Error = HelloChannelError;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let mut ch = {
-            let chs = self.channels.read().unwrap();
-            if chs.len() == 0 {
-                let waker = cx.waker().clone();
-                self.waker_tx.send(waker).unwrap();
-                return Poll::Pending;
-            }
-            let idx = self.counter.fetch_add(1, Ordering::Relaxed) % chs.len();
-            chs[idx].1.clone()
-        };
-
-        match ch.poll_ready(cx) {
-            Poll::Ready(_) => {
-                self.ch_tx.send(ch).unwrap();
-                Poll::Ready(Ok(()))
-            }
-            Poll::Pending => Poll::Pending,
+        if self.workers_num.load(Ordering::Relaxed) == 0 {
+            self.waker_tx.send(cx.waker().clone()).unwrap();
+            Poll::Pending
+        } else {
+            Poll::Ready(Ok(()))
         }
     }
 
     fn call(
         &mut self,
-        request: http::Request<BoxBody>,
+        req: http::Request<BoxBody>,
     ) -> Self::Future {
-        let mut ch = self.ch_rx.recv().unwrap();
+        let req_tx = self.request_tx.clone();
+        let (res_tx, res_rx) = flume::bounded(1);
+        let req = Request { req, res_tx };
 
-        ch.call(request)
+        let fut = async move {
+            req_tx.send_async(req).await.unwrap();
+            res_rx.recv_async().await.unwrap()
+        };
+
+        Box::pin(fut)
     }
+}
+
+async fn sleep(d: u64) {
+    time::sleep(time::Duration::from_millis(d)).await;
+}
+
+enum Change<K: PartialEq> {
+    Insert(K, Endpoint),
+    Remove(K),
 }

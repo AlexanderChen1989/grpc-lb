@@ -14,14 +14,16 @@ prost = "*"
 tokio = {version = "*", features = ["full"]}
 tonic = "*"
 
-trust-dns-resolver = "*"
 crossfire = "*"
+trust-dns-resolver = "*"
 
+env_logger = "*"
 flume = "*"
+log = "*"
 
 gethostname = "*"
 rand = "*"
-tower = {version = "0.4", features=["discover"]}
+tower = {version = "0.4", features = ["discover"]}
 
 [build-dependencies]
 cbindgen = "0.23.0"
