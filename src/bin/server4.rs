@@ -32,7 +32,7 @@ fn main() {
     let rt = Builder::new_multi_thread().enable_all().build().unwrap();
     let rt = Arc::new(rt);
 
-    for addr in ["0.0.0.0:7788", "0.0.0.0:7789"] {
+    for addr in ["0.0.0.0:7777", "0.0.0.0:8888"] {
         start_server(rt.clone(), addr.into(), rng_rx.clone());
     }
 
@@ -76,10 +76,6 @@ struct Request {
 struct HelloServiceImpl {
     rt: Arc<Runtime>,
     req_tx: flume::Sender<Request>,
-}
-
-fn after(n: u64) -> impl Future {
-    time::sleep(time::Duration::from_millis(n))
 }
 
 #[async_trait::async_trait]
@@ -134,14 +130,19 @@ impl Worker {
         let req_rx = self.req_rx.clone();
         let name = self.name.clone();
         self.rt.spawn(async move {
-            while let Ok(Request { req: _, res_tx }) = req_rx.recv_async().await {
-                let res = HelloRes {
-                    body: format!("worker-{name}-{idx}"),
-                };
-                res_tx.send_async(res).await.unwrap();
-                let d = time::Duration::from_millis(idx as u64 * 2);
-                time::sleep(d).await;
+            loop {
+                if let Ok(Request { req: _, res_tx }) = req_rx.recv_async().await {
+                    let res = HelloRes {
+                        body: format!("{name} - {idx}"),
+                    };
+                    sleep(100).await;
+                    let _ = res_tx.send_async(res).await;
+                }
             }
         });
     }
+}
+
+async fn sleep(d: u64) {
+    time::sleep(time::Duration::from_millis(d)).await;
 }
