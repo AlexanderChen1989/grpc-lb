@@ -15,6 +15,7 @@ use tonic::{body::BoxBody, codegen::http, transport::Endpoint};
 use tower::Service;
 
 fn main() {
+    let s = String::from("Hello, world");
     let rt = Arc::new(
         Builder::new_multi_thread()
             .worker_threads(2)
@@ -58,9 +59,6 @@ fn main() {
     });
 }
 
-type HelloChannelResponse = <Channel as Service<http::Request<BoxBody>>>::Response;
-type HelloChannelError = <Channel as Service<http::Request<BoxBody>>>::Error;
-
 #[derive(Clone)]
 struct KeyChannel {
     key: String,
@@ -70,7 +68,7 @@ struct KeyChannel {
 #[derive(Clone)]
 struct HelloChannel {
     rt: Arc<Runtime>,
-    change_rx: flume::Receiver<Change<String>>,
+    change_rx: flume::Receiver<Change>,
 
     keys: Arc<RwLock<HashSet<String>>>,
     chan_tx: flume::Sender<KeyChannel>,
@@ -81,7 +79,7 @@ struct HelloChannel {
 }
 
 impl HelloChannel {
-    fn new(rt: Arc<Runtime>) -> (Self, flume::Sender<Change<String>>) {
+    fn new(rt: Arc<Runtime>) -> (Self, flume::Sender<Change>) {
         let (change_tx, change_rx) = flume::bounded(10);
 
         let keys = Arc::new(RwLock::new(HashSet::new()));
@@ -96,11 +94,11 @@ impl HelloChannel {
             ready_chan_tx,
             ready_chan_rx,
         };
-        hc.start_change_loop();
+        hc.start();
         (hc, change_tx)
     }
 
-    fn start_change_loop(&self) {
+    fn start(&self) {
         let HelloChannel {
             rt,
             change_rx,
@@ -137,6 +135,9 @@ impl HelloChannel {
         });
     }
 }
+
+type HelloChannelResponse = <Channel as Service<http::Request<BoxBody>>>::Response;
+type HelloChannelError = <Channel as Service<http::Request<BoxBody>>>::Error;
 
 impl Service<http::Request<BoxBody>> for HelloChannel {
     type Response = HelloChannelResponse;
@@ -195,7 +196,7 @@ impl Service<http::Request<BoxBody>> for HelloChannel {
             let res = chan.chan.call(req).await;
             rt.spawn(async move {
                 if keys.read().await.contains(&chan.key) {
-                    chan_tx.send_async(chan).await;
+                    let _ = chan_tx.send_async(chan).await;
                 }
             });
 
@@ -210,7 +211,7 @@ async fn sleep(d: u64) {
     time::sleep(time::Duration::from_millis(d)).await;
 }
 
-enum Change<K: PartialEq> {
-    Insert(K, Endpoint),
-    Remove(K),
+enum Change {
+    Insert(String, Endpoint),
+    Remove(String),
 }
