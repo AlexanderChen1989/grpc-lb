@@ -915,6 +915,7 @@ dependencies = [
  "env_logger",
  "flume",
  "gethostname",
+ "lazy_static",
  "libc",
  "log",
  "prost",

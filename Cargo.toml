@@ -31,6 +31,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 reqwest = "*"
 
+lazy_static = "*"
+
 [build-dependencies]
 cbindgen = "0.23.0"
 tonic-build = "*"
